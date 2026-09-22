@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# local tooling, not part of the project
+.claude/
+
+# private notes, roadmap, site architecture — never published
+模块化设计.md
+README.private.md
+
+# test image pairs & outputs (hundreds of MB) — kept out of git
+对比测试/
+
+# generated offline bundle (rebuild with: python3 build_offline.py)
+eraser/橡皮擦合成-本地版.zip
+eraser/橡皮擦合成-本地版.html
