@@ -12,9 +12,13 @@ README.private.md
 对比测试/
 
 # generated offline bundle (rebuild with: python3 build_offline.py)
+eraser/无损改图-本地版.zip
 eraser/橡皮擦合成-本地版.zip
 eraser/橡皮擦合成-本地版.html
 
 # 内部交接文档、口播稿：不进公开仓库
 交接-网站更新.md
 视频口播稿.md
+
+# 设计稿和截图（Claude 设计输出）：不进公开仓库
+Claude outputs/
