@@ -6,6 +6,7 @@
   Licensed under CC BY-NC-SA 4.0: free to use, share and adapt for non-commercial purposes;
   keep the attribution; derivatives must be shared under the same license.
   License: https://creativecommons.org/licenses/by-nc-sa/4.0/   Source: https://github.com/perfect12369874/ai-web-tools
+  Version: v260923 (日期即版本号，页面右下角可见并链到源码仓库；每次更新改 #ver 一处即可)
   图片全部在浏览器本地处理，不会上传。
 -->
 <html lang="zh-CN">
@@ -99,6 +100,7 @@ main.over #empty .dz{border-color:var(--accent)}
 #links{position:absolute;right:16px;bottom:10px;height:34px;display:flex;align-items:center;gap:12px;font-size:11px}
 #links a{color:#5f6472;text-decoration:none}
 #links a:hover{color:var(--muted)}
+#ver{font-variant-numeric:tabular-nums}
 #tools{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px 12px}
 #tools>*{flex:none}
 .sep{width:1px;height:24px;background:#3a3e47;margin:0 6px}
@@ -224,8 +226,8 @@ label.chk input{accent-color:var(--accent);margin:0}
     <button id="bPng" class="primary" title="导出原尺寸 PNG，蒙版之外的像素与原图完全一致">下载合成图</button>
     <button id="bPsd" title="导出三层 PSD：原图 / 修改图（已校色，带蒙版）/ 盖印合成">下载 PSD</button>
   </div>
-  <a id="credit" href="https://taozui.name" target="_blank" rel="noopener" title="制作者：陶醉，点击访问">© 2026 陶醉</a>
-  <span id="links"><a href="橡皮擦合成-本地版.zip" download="橡皮擦合成-本地版.zip" title="下载本地版压缩包，解压后双击 index.html 即可离线使用">本地版</a><a id="lnkGit" href="https://github.com/perfect12369874/ai-web-tools" target="_blank" rel="noopener" title="源码开源（CC BY-NC-SA 4.0），欢迎提 bug 和需求">GitHub</a></span>
+  <a id="credit" href="https://taozui.name" target="_blank" rel="noopener" title="制作者：陶醉，点击访问">© 陶醉</a>
+  <span id="links"><a href="橡皮擦合成-本地版.zip" download="橡皮擦合成-本地版.zip" title="下载本地版压缩包，解压后双击 index.html 即可离线使用">本地版</a><a id="ver" href="https://github.com/perfect12369874/ai-web-tools" target="_blank" rel="noopener" title="更新日期 2026-09-23 · 源码开源（CC BY-NC-SA 4.0），欢迎提 bug 和需求">v260923</a></span>
 </div>
 </div>
 
@@ -345,10 +347,14 @@ async function setupAi() {
       : `<div>整张图都变了，结果就是修改图；想保留哪里用「还原」画笔涂。</div><span class="hb"><button id="hintOk">知道了</button></span>`);
     setShowMask(true); setOpacity(1);
   } else if (det && det.auto) {
-    det.cands.forEach((c, i) => { if (!det.autoIdx.includes(i)) c.done = true; });
     eraseCandidates(det.autoIdx, true);
     st += ` · 已自动采用 ${det.autoIdx.length} 处改动`;
-    showHint(`<div>已自动采用 ${det.autoIdx.length} 处改动；范围不对用「修改」「还原」画笔调。</div><span class="hb"><button id="hintOk">知道了</button></span>`);
+    if (det.extra > 0) {
+      showHint(`<div>已自动采用 ${det.autoIdx.length} 处改动；另有 ${det.extra} 处可能的改动已框出，是改动就点它。</div><span class="hb"><button id="hintAll">全部采用</button><button id="hintOk">知道了</button></span>`);
+      $('#hintAll').addEventListener('click', () => { eraseCandidates(S.det.cands.map((c, i) => i), true); dismissHint(); toast('已全部换成修改图', 'ok'); });
+    } else {
+      showHint(`<div>已自动采用 ${det.autoIdx.length} 处改动；范围不对用「修改」「还原」画笔调。</div><span class="hb"><button id="hintOk">知道了</button></span>`);
+    }
     setShowMask(true); setOpacity(1);
   } else if (det && det.cands.length) {
     showHint(`<div>已标出差异最大的 ${det.cands.length} 处，点框采用；漏掉的用「修改」画笔涂。</div><span class="hb"><button id="hintAll">全部采用</button><button id="hintOk">忽略</button></span>`);
@@ -607,16 +613,50 @@ function analyzeChanges() {
     else merged.push({ ids: [c.id], mass: c.mass, area: c.area, x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1 });
   }
   merged.sort((p, q) => q.mass - p.mass);
+  // A real edit is intense: its pixels sit far above the noise threshold on average (mean excess >= 1.4, i.e. average score >= 2.4x T).
+  // Re-rendered texture makes big but faint blobs (mean excess 0.3-1.3), so intensity separates the two where mass alone cannot.
+  const byId = new Map(comps.map(c => [c.id, c]));
+  const intense = (m, thr) => m.ids.some(id => { const c = byId.get(id); return c.mass / c.area >= thr && c.area >= n * 0.0002; });
+  // A slightly warped re-render leaves thin high-contrast edges (a ceiling lamp, a monitor bezel, keyboard keys) misaligned by a
+  // pixel or two after the global fit. Such a blob's difference mostly vanishes when the AI pixels are nudged a little; a real edit
+  // (a pattern removed, a penguin gone) does not. Blobs explained by a small shift are alignment residue, not changes.
+  const shiftExplains = m => {
+    const ids = new Set(m.ids), R = 3;
+    const cost = (dx, dy) => { let s = 0, c = 0;
+      for (let y = m.y0; y <= m.y1; y++) { const yy = y + dy; if (yy < 0 || yy >= h) continue;
+        for (let x = m.x0; x <= m.x1; x++) { const xx = x + dx; if (xx < 0 || xx >= w) continue;
+          const i = y * w + x; if (!ids.has(lab[i])) continue;
+          const q = (yy * w + xx) * 4; if (a[q + 3] < 250) continue;
+          const p = i * 4; s += Math.abs(o[p] - a[q]) + Math.abs(o[p + 1] - a[q + 1]) + Math.abs(o[p + 2] - a[q + 2]); c++; } }
+      return c ? s / c : 0; };
+    const base = cost(0, 0); if (!base) return false;
+    let best = base;
+    for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) if (dx || dy) { const v = cost(dx, dy); if (v < best) best = v; }
+    m.shiftGain = +(1 - best / base).toFixed(2);
+    return best < base * 0.45;
+  };
+  merged.forEach(m => { m.mean = m.mass / m.area; m.shift = m.mean >= 1.0 && shiftExplains(m); m.strong = !m.shift && intense(m, 1.4); });
+  // many intense blobs = a mass removal (crowd, flags): the bar can drop to 1.1 so low-contrast members (a white bear on snow) come along too
+  if (merged.filter(m => m.strong).length >= 8) merged.forEach(m => { if (!m.strong && !m.shift) m.strong = intense(m, 1.1); });
+  const strong = merged.filter(m => m.strong).slice(0, 40);
+  const auto = strong.length > 0 && (strong[0].area >= n * 0.002 || strong.length >= 3);
+  // fainter blobs (mean 1.0-1.4): with more than 5 intense edits they are almost surely edits too, so apply them; otherwise offer them as boxes
+  const faint = merged.filter(m => !m.strong && !m.shift && m.mean >= 1.0).slice(0, 12);
+  if (auto && strong.length > 5) faint.forEach(m => { m.strong = true; });
+  const list = auto ? strong.concat(faint) : merged.filter(m => !m.shift).slice(0, 5);
   const top = merged.slice(0, 5);
   const dominance = top.length ? top[0].mass / (top[1] ? top[1].mass : top[0].mass * 0.01) : 0;
   const res = { w, h, f, lab, T: `色差 ${tS.T.toFixed(1)} / 像素差 ${tA.T.toFixed(1)}`, med: +med.toFixed(2), mad: +mad.toFixed(2), comps: comps.length, dominance: +dominance.toFixed(1),
-    cands: top.map(c => ({ ids: c.ids, area: c.area / n, mass: Math.round(c.mass), box: [c.x0 * f, c.y0 * f, (c.x1 + 1) * f, (c.y1 + 1) * f], done: false })) };
+    cands: list.map(c => ({ ids: c.ids, area: c.area / n, mass: Math.round(c.mass), mean: +c.mean.toFixed(2), strong: !!c.strong, shiftGain: c.shiftGain, box: [c.x0 * f, c.y0 * f, (c.x1 + 1) * f, (c.y1 + 1) * f], done: false })) };
   res.all = merged.slice(0, 15).map(c => ({ mass: Math.round(c.mass), area: +(c.area / n * 100).toFixed(3), box: [c.x0 * f, c.y0 * f, (c.x1 + 1) * f, (c.y1 + 1) * f] }));   // for inspection in the advanced panel
+  res.allMasses = comps.filter(c => c.area >= minArea).map(c => Math.round(c.mass));   // sorted desc, for tuning
+  res.allStats = comps.filter(c => c.area >= minArea).slice(0, 40).map(c => [Math.round(c.mass), c.area, +(c.mass / c.area).toFixed(2), +(c.area / n * 100).toFixed(3)]);   // [mass, areaPx, meanExcess, area%]
+  res.shifted = merged.filter(m => m.shift).map(m => ({ mean: +m.mean.toFixed(2), gain: m.shiftGain, area: +(m.area / n * 100).toFixed(3), box: [m.x0 * f, m.y0 * f, (m.x1 + 1) * f, (m.y1 + 1) * f] }));   // blobs dismissed as alignment residue
   // noise level of this image = typical mass of the blobs ranked 6-15 (the bulk of re-render speckle)
   const tail = merged.slice(5, 15).map(c => c.mass).sort((a, b) => a - b); res.noise = tail.length ? Math.round(tail[tail.length >> 1]) : 0;
-  res.auto = top.length > 0 && dominance >= 20 && top[0].area >= n * 0.002;   // one blob dwarfing everything else = a confident edit
-  // once confident, also take the other blobs that are far above the noise (several people removed, a leg cut off from its body)
-  res.autoIdx = res.auto ? top.map((c, i) => i).filter(i => i === 0 || top[i].mass >= 25 * Math.max(res.noise, 1)) : [];
+  res.auto = auto;                                                          // confident when at least one intense blob is sizeable, or three intense blobs exist
+  res.autoIdx = res.cands.map((c, i) => i).filter(i => res.cands[i].strong);   // every intense blob is applied; fainter ones stay as boxed suggestions
+  res.extra = res.cands.length - res.autoIdx.length;
   S.det = res; updateDetInfo();
   return res;
 }
@@ -675,7 +715,7 @@ function layoutCandidates() {
   const v = S.view, placed = [];
   S.det.cands.forEach((c, i) => {
     if (c.done) return;
-    const b = document.createElement('button'); b.className = 'c' + i; b.textContent = `#${i + 1} 改动大`;
+    const b = document.createElement('button'); b.className = 'c' + (i % 5); b.textContent = `#${i + 1} 改动大`;
     let x = v.tx + c.box[0] * v.scale, y = v.ty + c.box[1] * v.scale - 4;
     for (let tries = 0; tries < 6; tries++) { const hit = placed.find(p => Math.abs(p.x - x) < 150 && Math.abs(p.y - y) < 30); if (!hit) break; y = hit.y + 30; }
     placed.push({ x, y });
@@ -691,7 +731,7 @@ function drawCandidates() {
   vctx.setTransform(1, 0, 0, 1, 0, 0); vctx.lineWidth = 2 * d; vctx.setLineDash([8 * d, 6 * d]);
   S.det.cands.forEach((c, i) => {
     if (c.done) return;
-    vctx.strokeStyle = cols[i];
+    vctx.strokeStyle = cols[i % 5];
     vctx.strokeRect((v.tx + c.box[0] * v.scale) * d, (v.ty + c.box[1] * v.scale) * d, (c.box[2] - c.box[0]) * v.scale * d, (c.box[3] - c.box[1]) * v.scale * d);
   });
   vctx.setLineDash([]);
@@ -700,7 +740,7 @@ function updateDetInfo() {
   const r = S.det; if (!r) { $('#detInfo').textContent = '—'; return; }
   if (r.bgMode) { $('#detInfo').innerHTML = `<b>背景替换模式</b>：${r.changedShare}% 的画面像素差异超过 20，未变阈值 ${r.Tlow}，保留 ${r.keepCount} 处大块未变区域，其余换成修改图`; return; }
   const list = r.cands.map((c, i) => `#${i + 1} 强度 ${c.mass}，占 ${(c.area * 100).toFixed(1)}%`).join('；');
-  $('#detInfo').innerHTML = (r.auto ? `第一名强度是第二名的 <b>${r.dominance}</b> 倍，噪声水平 ${r.noise}，已自动采用 ${r.autoIdx.length} 处` : r.cands.length ? `第一名只有第二名的 <b>${r.dominance}</b> 倍，不敢自动采用，改为标出候选` : '没有区域明显高于噪声，请手动涂') +
+  $('#detInfo').innerHTML = (r.auto ? `已自动采用 ${r.autoIdx.length} 处高强度改动（平均超阈 ≥ 1.4）${r.extra ? `，另框出 ${r.extra} 处较弱候选` : ''}` : r.cands.length ? `第一名只有第二名的 <b>${r.dominance}</b> 倍，不敢自动采用，改为标出候选` : '没有区域明显高于噪声，请手动涂') +
     `<br>噪声阈值 ${r.T}，${r.comps} 个区域<br>${list || '—'}<br>整图重渲染的图，细微改动无法可靠识别`;
 }
 
@@ -947,7 +987,7 @@ function setHardness(h) {
 $$('#tip button').forEach(b => b.addEventListener('click', () => setHardness(+b.dataset.hard)));
 $('#rSoft').addEventListener('input', e => setHardness(1 - (+e.target.value) / 100));
 $('#bShowMask').addEventListener('click', () => { S.view.peek = false; setShowMask(!S.view.showMask); });
-$('#bDetect').addEventListener('click', () => { const r = analyzeChanges(); if (r && r.bgMode) { applyBackgroundMask(); setShowMask(true); toast(`背景替换模式：保留 ${r.keepCount} 处前景，其余换成修改图`, 'ok', 4000); } else if (r && r.auto) { r.cands.forEach((c, i) => { if (!r.autoIdx.includes(i)) c.done = true; }); eraseCandidates(r.autoIdx, true); setShowMask(true); toast(`已自动采用 ${r.autoIdx.length} 处改动`, 'ok'); } else if (r && r.cands.length) { render(); toast(`已标出差异最大的 ${r.cands.length} 处，点一下就换成修改图`, 'ok', 4000); } else toast('没有区域明显高于噪声，请手动涂', 'warn', 4000); });
+$('#bDetect').addEventListener('click', () => { const r = analyzeChanges(); if (r && r.bgMode) { applyBackgroundMask(); setShowMask(true); toast(`背景替换模式：保留 ${r.keepCount} 处前景，其余换成修改图`, 'ok', 4000); } else if (r && r.auto) { eraseCandidates(r.autoIdx, true); setShowMask(true); toast(`已自动采用 ${r.autoIdx.length} 处改动`, 'ok'); } else if (r && r.cands.length) { render(); toast(`已标出差异最大的 ${r.cands.length} 处，点一下就换成修改图`, 'ok', 4000); } else toast('没有区域明显高于噪声，请手动涂', 'warn', 4000); });
 
 // ---------- keyboard ----------
 window.addEventListener('keydown', e => {
